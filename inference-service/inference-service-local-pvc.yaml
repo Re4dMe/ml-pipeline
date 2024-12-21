@@ -1,0 +1,12 @@
+apiVersion: "serving.kserve.io/v1beta1"
+kind: "InferenceService"
+metadata:
+  name: "sklearn-iris-local-pvc"
+  namespace: "kubeflow"
+spec:
+  predictor:
+    model:
+      modelFormat:
+        name: mlflow
+      protocolVersion: v2
+      storageUri: "pvc://mlflow-pvc/124183357947624304/fb57cb097bbd474080be45da73c08835/artifacts/MLmodel"

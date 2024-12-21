@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: kubeflow
+  name: mlflow-tracking-server
+  labels:
+    app: mlflow-tracking-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow-tracking-server-pods
+  template:
+    metadata:
+      labels:
+        app: mlflow-tracking-server-pods
+    spec:
+      volumes:
+        - name: mlflow-pvc
+          persistentVolumeClaim:
+            claimName: mlflow-pvc
+      containers:
+        - name: mlflow-tracking-server-pod
+          image: dockeruser955/tracking-server
+          imagePullPolicy: Always # According to official website,
+                                  # the cache mechanism prevent system from
+                                  # download image again if it is present locally.
+          args:
+            - --host=0.0.0.0
+            - --port=5000
+            - --backend-store-uri=/opt/mlflow/backend
+            - --default-artifact-root=/opt/mlflow/backend
+            - --workers=2
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+          volumeMounts:
+            - name: mlflow-pvc
+              mountPath: /opt/mlflow/backend

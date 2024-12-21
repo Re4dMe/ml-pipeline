@@ -1,0 +1,599 @@
+# PIPELINE DEFINITION
+# Name: iris-pipeline
+# Inputs:
+#    config_path: str
+#    data_path: str
+components:
+  comp-condition-1:
+    dag:
+      tasks:
+        condition-2:
+          componentRef:
+            name: comp-condition-2
+          dependentTasks:
+          - model-training
+          inputs:
+            parameters:
+              pipelinechannel--detect-model-degradation-retraining:
+                componentInputParameter: pipelinechannel--detect-model-degradation-retraining
+              pipelinechannel--model-training-model_register_flag:
+                taskOutputParameter:
+                  outputParameterKey: model_register_flag
+                  producerTask: model-training
+              pipelinechannel--model-training-model_uri:
+                taskOutputParameter:
+                  outputParameterKey: model_uri
+                  producerTask: model-training
+              pipelinechannel--model-training-runs_model_uri:
+                taskOutputParameter:
+                  outputParameterKey: runs_model_uri
+                  producerTask: model-training
+          taskInfo:
+            name: model-register-condition
+          triggerPolicy:
+            condition: inputs.parameter_values['pipelinechannel--model-training-model_register_flag']
+              == true
+        model-training:
+          cachingOptions: {}
+          componentRef:
+            name: comp-model-training
+          inputs:
+            parameters:
+              best_acc:
+                componentInputParameter: pipelinechannel--detect-model-degradation-accuracy
+              data_path:
+                componentInputParameter: pipelinechannel--data_path
+              tracking_uri:
+                runtimeValue:
+                  constant: http://mlflow-tracking-server.kubeflow:5000
+          taskInfo:
+            name: model-training
+    inputDefinitions:
+      parameters:
+        pipelinechannel--data_path:
+          parameterType: STRING
+        pipelinechannel--detect-model-degradation-accuracy:
+          parameterType: NUMBER_DOUBLE
+        pipelinechannel--detect-model-degradation-retraining:
+          parameterType: BOOLEAN
+  comp-condition-2:
+    dag:
+      tasks:
+        model-register:
+          cachingOptions: {}
+          componentRef:
+            name: comp-model-register
+          inputs:
+            parameters:
+              model_tag:
+                runtimeValue:
+                  constant: Production
+              register_model_name:
+                runtimeValue:
+                  constant: SklearnLogisticRegression
+              runs_model_uri:
+                componentInputParameter: pipelinechannel--model-training-runs_model_uri
+              tracking_uri:
+                runtimeValue:
+                  constant: http://mlflow-tracking-server.kubeflow:5000
+          taskInfo:
+            name: model-register
+        model-serving:
+          cachingOptions: {}
+          componentRef:
+            name: comp-model-serving
+          dependentTasks:
+          - model-register
+          inputs:
+            parameters:
+              model_uri:
+                componentInputParameter: pipelinechannel--model-training-model_uri
+              pvc_name:
+                runtimeValue:
+                  constant: mlflow-pvc
+              tracking_uri:
+                runtimeValue:
+                  constant: http://mlflow-tracking-server.kubeflow:5000
+          taskInfo:
+            name: model-serving
+    inputDefinitions:
+      parameters:
+        pipelinechannel--detect-model-degradation-retraining:
+          parameterType: BOOLEAN
+        pipelinechannel--model-training-model_register_flag:
+          parameterType: BOOLEAN
+        pipelinechannel--model-training-model_uri:
+          parameterType: STRING
+        pipelinechannel--model-training-runs_model_uri:
+          parameterType: STRING
+  comp-detect-model-degradation:
+    executorLabel: exec-detect-model-degradation
+    inputDefinitions:
+      parameters:
+        data_path:
+          parameterType: STRING
+        model_tag:
+          defaultValue: Production
+          isOptional: true
+          parameterType: STRING
+        register_model_name:
+          parameterType: STRING
+        retrain_threshold:
+          defaultValue: 0.7
+          isOptional: true
+          parameterType: NUMBER_DOUBLE
+    outputDefinitions:
+      parameters:
+        accuracy:
+          parameterType: NUMBER_DOUBLE
+        retraining:
+          parameterType: BOOLEAN
+  comp-model-register:
+    executorLabel: exec-model-register
+    inputDefinitions:
+      parameters:
+        model_tag:
+          defaultValue: Production
+          isOptional: true
+          parameterType: STRING
+        register_model_name:
+          parameterType: STRING
+        runs_model_uri:
+          parameterType: STRING
+        tracking_uri:
+          parameterType: STRING
+  comp-model-serving:
+    executorLabel: exec-model-serving
+    inputDefinitions:
+      parameters:
+        model_uri:
+          parameterType: STRING
+        pvc_name:
+          parameterType: STRING
+        tracking_uri:
+          parameterType: STRING
+  comp-model-training:
+    executorLabel: exec-model-training
+    inputDefinitions:
+      parameters:
+        aws_access_key_id:
+          defaultValue: ''
+          isOptional: true
+          parameterType: STRING
+        aws_default_region:
+          defaultValue: ''
+          isOptional: true
+          parameterType: STRING
+        aws_secret_access_key:
+          defaultValue: ''
+          isOptional: true
+          parameterType: STRING
+        best_acc:
+          parameterType: NUMBER_DOUBLE
+        data_path:
+          parameterType: STRING
+        tracking_uri:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        artifact_path:
+          parameterType: STRING
+        artifact_uri:
+          parameterType: STRING
+        model_register_flag:
+          parameterType: BOOLEAN
+        model_uri:
+          parameterType: STRING
+        runs_model_uri:
+          parameterType: STRING
+  comp-prepare-data:
+    executorLabel: exec-prepare-data
+    inputDefinitions:
+      parameters:
+        data_path:
+          parameterType: STRING
+  comp-train-test-split:
+    executorLabel: exec-train-test-split
+    inputDefinitions:
+      parameters:
+        data_path:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-detect-model-degradation:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - detect_model_degradation
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.6.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef detect_model_degradation(\n    data_path: str,\n    register_model_name:\
+          \ str,\n    model_tag: str = 'Production',\n    retrain_threshold: float\
+          \ = 0.7\n) -> NamedTuple('outputs', retraining=bool, accuracy=float):  #\
+          \ type: ignore\n    import numpy as np\n    import mlflow\n    from mlflow\
+          \ import MlflowClient\n    from sklearn.linear_model import LogisticRegression\n\
+          \    from sklearn.metrics import accuracy_score\n\n    mlflow.set_tracking_uri(\"\
+          http://mlflow-tracking-server.kubeflow:5000\")\n    retrain_flag = False\n\
+          \    pipeline_outputs = NamedTuple('pipeline_outputs',\n               \
+          \                   retraining=bool,\n                                 \
+          \ accuracy=float)\n    try:\n        register_model_uri = f\"models:/{register_model_name}@{model_tag}\"\
+          \n        print(f'Load register model uri: {register_model_uri}')\n    \
+          \    register_model = mlflow.sklearn.load_model(register_model_uri)\n  \
+          \      print(f'Loaded successfully: {register_model_uri}')\n    except Exception\
+          \ as err:\n        # If no existing model, then trigger training pipeline\n\
+          \        print(f'Loaded failed. {err}')\n        retrain_flag = True\n \
+          \       return pipeline_outputs(retraining=retrain_flag, accuracy=0)\n\n\
+          \    x_test = np.load(f'{data_path}/x_test.npy', allow_pickle=True)\n  \
+          \  y_test = np.load(f'{data_path}/y_test.npy', allow_pickle=True)\n\n  \
+          \  y_pred = register_model.predict(x_test)\n    acc_score = accuracy_score(y_test,\
+          \ y_pred)\n\n    print(f'accuracy: {acc_score}, retraining threshold: {retrain_threshold}')\n\
+          \    if acc_score < retrain_threshold:\n        print('Trigger retraining\
+          \ pipeline')\n        retrain_flag = True\n\n    return pipeline_outputs(retraining=retrain_flag,\
+          \ accuracy=acc_score)\n\n"
+        image: dockeruser955/pipeline-container-image
+    exec-model-register:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - model_register
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.6.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef model_register(tracking_uri: str,\n                   runs_model_uri:\
+          \ str,\n                   register_model_name: str,\n                 \
+          \  model_tag: str = 'Production'):\n    import numpy as np\n    import mlflow\n\
+          \    import datetime\n    from mlflow.models import infer_signature\n  \
+          \  from sklearn.linear_model import LogisticRegression\n    from sklearn.metrics\
+          \ import accuracy_score\n    from mlflow import MlflowClient\n\n    def\
+          \ print_model_info(rm):\n        print(\"--Model--\")\n        print(\"\
+          name: {}\".format(rm.name))\n        print(\"aliases: {}\".format(rm.aliases))\n\
+          \n    mlflow.set_tracking_uri(tracking_uri)\n    client = MlflowClient()\n\
+          \n    model_version = mlflow.register_model(runs_model_uri, register_model_name)\n\
+          \    client.set_registered_model_alias(register_model_name, model_tag,\n\
+          \                                      model_version.version)\n    model\
+          \ = client.get_registered_model(register_model_name)\n    print_model_info(model)\n\
+          \n"
+        image: dockeruser955/pipeline-container-image
+    exec-model-serving:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - model_serving
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.6.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef model_serving(tracking_uri: str,\n                  model_uri:\
+          \ str,\n                  pvc_name: str):\n    from kubernetes import client\n\
+          \    from kserve import (KServeClient, constants, utils,\n             \
+          \           V1beta1InferenceService, V1beta1InferenceServiceSpec,\n    \
+          \                    V1beta1PredictorSpec, V1beta1ModelSpec,\n         \
+          \               V1beta1ModelFormat, V1beta1SKLearnSpec)\n    import time\n\
+          \    import mlflow\n\n    mlflow.set_tracking_uri(tracking_uri)\n\n    namespace\
+          \ = 'kubeflow'  # utils.get_default_target_namespace()\n    name = 'sklearn-iris'\n\
+          \    kserve_version = 'v1beta1'\n    api_version = constants.KSERVE_GROUP\
+          \ + '/' + kserve_version\n\n    model_uri = model_uri.split('backend')[1]\n\
+          \    storage_uri = f'pvc://{pvc_name}{model_uri}'\n\n    # if the model\
+          \ is store in a remote storage uri, use\n    # storage_uri = s3://your-model-uri\
+          \ or gs://your-model-uri\n    print(f'storage_uri: {storage_uri}')\n\n \
+          \   protocol_version = \"v2\"\n    # Enable Prometheus\n    annotations\
+          \ = {\n        'serving.kserve.io/enable-prometheus-scraping': 'True'\n\
+          \    }\n    predictor = V1beta1PredictorSpec(\n        min_replicas=1,\n\
+          \        model=V1beta1ModelSpec(\n            model_format=V1beta1ModelFormat(name=\"\
+          mlflow\", ),\n            storage_uri=storage_uri,\n            protocol_version=protocol_version,\n\
+          \        ),\n    )\n\n    isvc = V1beta1InferenceService(\n        api_version=constants.KSERVE_V1BETA1,\n\
+          \        kind=constants.KSERVE_KIND,\n        metadata=client.V1ObjectMeta(name=name,\n\
+          \                                     namespace=namespace,\n           \
+          \                          annotations=annotations),\n        spec=V1beta1InferenceServiceSpec(predictor=predictor),\n\
+          \    )\n\n    KServe = KServeClient()\n\n    try:\n        KServe.delete(name=name,\
+          \ namespace=namespace)\n        print(\"Delete existing inference-service.\"\
+          )\n    except Exception as e:\n        print(f\"Delete existing inference-service\
+          \ failed. Exception: {e}\")\n    time.sleep(10)\n\n    KServe.create(isvc)\n\
+          \n"
+        image: dockeruser955/pipeline-container-image
+    exec-model-training:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - model_training
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.6.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef model_training(\n    tracking_uri: str,\n    data_path: str,\n\
+          \    best_acc: float,\n    aws_access_key_id: str = \"\",\n    aws_secret_access_key:\
+          \ str = \"\",\n    aws_default_region: str = \"\"\n) -> NamedTuple('outputs',\n\
+          \                artifact_path=str,\n                artifact_uri=str,\n\
+          \                model_uri=str,\n                runs_model_uri=str,\n \
+          \               model_register_flag=bool):  # type: ignore\n    import numpy\
+          \ as np\n    import pickle\n    import mlflow\n    import datetime\n   \
+          \ from mlflow.models import infer_signature\n    from sklearn.linear_model\
+          \ import LogisticRegression\n    from sklearn.metrics import accuracy_score\n\
+          \    from mlflow import MlflowClient\n\n    pipeline_outputs = NamedTuple('pipeline_outputs',\n\
+          \                                  artifact_path=str,\n                \
+          \                  artifact_uri=str,\n                                 \
+          \ model_uri=str,\n                                  runs_model_uri=str,\n\
+          \                                  model_register_flag=bool)\n    now =\
+          \ datetime.datetime.now()\n\n    # Set AWS credentials in the environment\n\
+          \    # os.environ[\"AWS_ACCESS_KEY_ID\"] = aws_access_key_id\n    # os.environ[\"\
+          AWS_SECRET_ACCESS_KEY\"] = aws_secret_access_key\n    # os.environ[\"AWS_DEFAULT_REGION\"\
+          ] = aws_default_region\n\n    # log and register the model using MLflow\
+          \ scikit-learn API\n    mlflow.set_tracking_uri(tracking_uri)\n\n    experiment_id\
+          \ = mlflow.create_experiment(\n        f\"test-{now.strftime('%Y-%m-%d-%H-%M-%S')}\"\
+          )\n\n    artifact_path = \"MLmodel\"\n\n    retrain_accuracy = 0\n    with\
+          \ mlflow.start_run(experiment_id=experiment_id) as run:\n        mlflow.log_param('max_iter',\
+          \ 100)\n        x_train = np.load(f'{data_path}/x_train.npy', allow_pickle=True)\n\
+          \        y_train = np.load(f'{data_path}/y_train.npy', allow_pickle=True)\n\
+          \        classifier = LogisticRegression(max_iter=100)\n        classifier.fit(x_train,\
+          \ y_train)\n        score = classifier.score(x_train, y_train)\n\n     \
+          \   with open(f'{data_path}/model.pkl', 'wb') as f:\n            pickle.dump(classifier,\
+          \ f)\n\n        # Infer the model signature\n        x_test = np.load(f'{data_path}/x_test.npy',\
+          \ allow_pickle=True)\n        y_test = np.load(f'{data_path}/y_test.npy',\
+          \ allow_pickle=True)\n\n        y_pred = classifier.predict(x_test)\n  \
+          \      signature = infer_signature(x_test, y_pred)\n\n        retrain_accuracy\
+          \ = accuracy_score(y_test, y_pred)\n\n        # Log metric\n        mlflow.log_metric(\"\
+          score\", score)\n\n        # Log model artifact\n        mlflow.log_artifact(local_path=f'{data_path}/model.pkl',\n\
+          \                            artifact_path=artifact_path)\n        mlflow.log_artifact(local_path=f'{data_path}/y_test.npy',\n\
+          \                            artifact_path=artifact_path)\n        mlflow.log_artifact(local_path=f'{data_path}/x_test.npy',\n\
+          \                            artifact_path=artifact_path)\n\n        # Log\
+          \ model\n        model_info = mlflow.sklearn.log_model(\n            sk_model=classifier,\n\
+          \            artifact_path=artifact_path,\n            signature=signature,\n\
+          \        )\n\n    model_uri = f\"{run.info.artifact_uri}/{artifact_path}\"\
+          \n    runs_model_uri = f\"runs:/{run.info.run_id}/{artifact_path}\"\n  \
+          \  model_register_flag = False\n\n    # If the performance is improved,\
+          \ register model linked to artifact location\n    if retrain_accuracy >\
+          \ best_acc:\n        model_register_flag = True\n\n    return pipeline_outputs(artifact_path=artifact_path,\n\
+          \                            artifact_uri=run.info.artifact_uri,\n     \
+          \                       model_uri=model_uri,\n                         \
+          \   runs_model_uri=runs_model_uri,\n                            model_register_flag=model_register_flag)\n\
+          \n"
+        image: dockeruser955/pipeline-container-image
+    exec-prepare-data:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - prepare_data
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.6.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef prepare_data(data_path: str):\n    from sklearn import datasets\n\
+          \    import pandas as pd\n    import time\n    import datetime\n    '''\n\
+          \    Access your own Data Server here.\n    data = request('YourOwnDataServer')\n\
+          \n    We use iris dataset as an example.\n    '''\n\n    iris = datasets.load_iris()\n\
+          \    df = pd.DataFrame(iris.data, columns=iris.feature_names)\n    df['species']\
+          \ = iris.target\n\n    df = df.dropna()\n    df.to_csv(f'{data_path}/final_df.csv',\
+          \ index=False)\n    df = pd.read_csv(f'{data_path}/final_df.csv')\n\n"
+        image: dockeruser955/pipeline-container-image
+    exec-train-test-split:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - train_test_split
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.6.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef train_test_split(data_path: str):\n    from sklearn.model_selection\
+          \ import train_test_split\n    import pandas as pd\n    import numpy as\
+          \ np\n    import datetime\n    import os\n    final_data = pd.read_csv(f'{data_path}/final_df.csv')\n\
+          \n    target_column = 'species'\n    x = final_data.loc[:, final_data.columns\
+          \ != target_column]\n    y = final_data.loc[:, final_data.columns == target_column]\n\
+          \n    x_train, x_test, y_train, y_test = train_test_split(x,\n         \
+          \                                               y,\n                   \
+          \                                     test_size=0.2,\n                 \
+          \                                       stratify=y,\n                  \
+          \                                      random_state=37)\n    np.save(f'{data_path}/x_train.npy',\
+          \ x_train)\n    np.save(f'{data_path}/x_test.npy', x_test)\n    np.save(f'{data_path}/y_train.npy',\
+          \ y_train)\n    np.save(f'{data_path}/y_test.npy', y_test)\n\n"
+        image: dockeruser955/pipeline-container-image
+pipelineInfo:
+  name: iris-pipeline
+root:
+  dag:
+    tasks:
+      condition-1:
+        componentRef:
+          name: comp-condition-1
+        dependentTasks:
+        - detect-model-degradation
+        inputs:
+          parameters:
+            pipelinechannel--data_path:
+              componentInputParameter: data_path
+            pipelinechannel--detect-model-degradation-accuracy:
+              taskOutputParameter:
+                outputParameterKey: accuracy
+                producerTask: detect-model-degradation
+            pipelinechannel--detect-model-degradation-retraining:
+              taskOutputParameter:
+                outputParameterKey: retraining
+                producerTask: detect-model-degradation
+        taskInfo:
+          name: retraining-condition
+        triggerPolicy:
+          condition: inputs.parameter_values['pipelinechannel--detect-model-degradation-retraining']
+            == true
+      detect-model-degradation:
+        cachingOptions: {}
+        componentRef:
+          name: comp-detect-model-degradation
+        dependentTasks:
+        - train-test-split
+        inputs:
+          parameters:
+            data_path:
+              componentInputParameter: data_path
+            register_model_name:
+              runtimeValue:
+                constant: SklearnLogisticRegression
+        taskInfo:
+          name: detect-model-degradation
+      prepare-data:
+        cachingOptions: {}
+        componentRef:
+          name: comp-prepare-data
+        inputs:
+          parameters:
+            data_path:
+              componentInputParameter: data_path
+        taskInfo:
+          name: prepare-data
+      train-test-split:
+        cachingOptions: {}
+        componentRef:
+          name: comp-train-test-split
+        dependentTasks:
+        - prepare-data
+        inputs:
+          parameters:
+            data_path:
+              componentInputParameter: data_path
+        taskInfo:
+          name: train-test-split
+  inputDefinitions:
+    parameters:
+      config_path:
+        parameterType: STRING
+      data_path:
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.6.0
+---
+platforms:
+  kubernetes:
+    deploymentSpec:
+      executors:
+        exec-detect-model-degradation:
+          pvcMount:
+          - constant: ml-data-pvc
+            mountPath: /data
+          - constant: mlflow-pvc
+            mountPath: /opt/mlflow/backend
+        exec-model-register:
+          pvcMount:
+          - constant: mlflow-pvc
+            mountPath: /opt/mlflow/backend
+        exec-model-serving:
+          pvcMount:
+          - constant: mlflow-pvc
+            mountPath: /opt/mlflow/backend
+        exec-model-training:
+          pvcMount:
+          - constant: ml-data-pvc
+            mountPath: /data
+          - constant: mlflow-pvc
+            mountPath: /opt/mlflow/backend
+        exec-prepare-data:
+          pvcMount:
+          - constant: ml-data-pvc
+            mountPath: /data
+        exec-train-test-split:
+          pvcMount:
+          - constant: ml-data-pvc
+            mountPath: /data
